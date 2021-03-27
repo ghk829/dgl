@@ -222,6 +222,7 @@ def train(args):
     count_rmse = 1
     count_num = 1
     count_loss = 0
+    count_step = 0
 
     dataset.train_enc_graph = dataset.train_enc_graph.int().to(args.device)
     dataset.train_dec_graph = dataset.train_dec_graph.int().to(args.device)
@@ -248,7 +249,6 @@ def train(args):
         net.train()
         unique_item_list = dataset.train['item_id'].unique().tolist()
         batches = []
-        count_step = 0
         ufeat, ifeat = net.encoder(dataset.train_enc_graph,
                                    dataset.user_feature, dataset.movie_feature)
         from tqdm import tqdm
@@ -256,11 +256,13 @@ def train(args):
             user, item, rating = row.user_id, row.item_id, row.rating
             userid = dataset.global_user_id_map[user]
             observed = dataset.train[dataset.train['user_id'] == user]['item_id'].unique().tolist()
-            while True:
+            negatives = set()
+            while len(negatives) < 1:
                 sample = random.choice(unique_item_list)
                 if sample not in observed:
+                    negatives.add(sample)
                     batches.append((userid, dataset.global_item_id_map[item], dataset.global_item_id_map[sample]))
-                    break
+
         for bt in batch(batches, 10240):
             uidfeat = ufeat[[e[0] for e in bt]]
             posfeat = ifeat[[e[1] for e in bt]]
@@ -277,6 +279,8 @@ def train(args):
             emb_loss = lmbd * regularizer
             optimizer.zero_grad()
             loss = mf_loss + emb_loss
+            print('mf_loss', mf_loss)
+            print('emb_loss', emb_loss)
             count_loss += loss.item()
             loss.backward()
             optimizer.step()
