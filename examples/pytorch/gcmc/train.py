@@ -18,7 +18,7 @@ from utils import get_activation, get_optimizer, torch_total_param_num, torch_ne
 class DotProduct(nn.Module):
     def __init__(self,src_in_units,dst_in_units):
         super(DotProduct, self).__init__()
-
+        self.dropout = nn.Dropout(0.1)
         self.Q = nn.Parameter(th.randn(src_in_units, dst_in_units))
 
     def forward(self, dec_graph, ufeat, ifeat):
@@ -32,8 +32,8 @@ class DotProduct(nn.Module):
         return out
 
     def inference(self, uidfeat, ifeat):
-
-        return uidfeat @ self.Q @ ifeat.T
+        with th.no_grad():
+            return self.dropout(uidfeat) @ self.Q @ self.dropout(ifeat).T
 
 class Net(nn.Module):
     def __init__(self, args):
@@ -243,29 +243,27 @@ def train(args):
                                    dataset.user_feature, dataset.movie_feature)
         from tqdm import tqdm
         for i, row in tqdm(list(dataset.train.iterrows())):
-            user,item,rating = row['user_id'], row['item_id'], row['rating']
+            user, item, rating = row['user_id'], row['item_id'], row['rating']
             userid = dataset.global_user_id_map[user]
-            observed = dataset.train[dataset.train['user_id'] == user]['item_id'].tolist()
-            res = set()
-            while len(res) < 1:
+            observed = dataset.train[dataset.train['user_id'] == user]['item_id'].unique().tolist()
+            while True:
                 sample = random.choice(unique_item_list)
                 if sample not in observed:
-                    res.add(sample)
                     batches.append((userid, dataset.global_item_id_map[item], dataset.global_item_id_map[sample]))
+                    break
             if len(batches) == 1024:
-                uidfeat = ufeat[[ e[0] for e in batches]]
+                uidfeat = ufeat[[e[0] for e in batches]]
                 posfeat = ifeat[[e[1] for e in batches]]
                 negfeat = ifeat[[e[2] for e in batches]]
 
-                pos_scores = uidfeat @ net.decoder.Q @ posfeat.T
-                neg_scores = uidfeat @ net.decoder.Q @ negfeat.T
+                pos_scores = net.decoder.dropout(uidfeat) @ net.decoder.Q @ net.decoder.dropout(posfeat).T
+                neg_scores = net.decoder.dropout(uidfeat) @ net.decoder.Q @ net.decoder.dropout(negfeat).T
 
                 lmbd = 1e-4
-                mf_loss = -nn.BCELoss()(th.sigmoid(posfeat), th.ones_like(posfeat)) + nn.LogSigmoid()(
-                    pos_scores - neg_scores).mean()
+                mf_loss = -nn.BCELoss()(th.sigmoid(pos_scores), th.ones_like(pos_scores)) + nn.LogSigmoid()(pos_scores - neg_scores).mean()
                 mf_loss = -1 * mf_loss
 
-                regularizer = (th.norm(uidfeat) ** 2 + th.norm(posfeat) ** 2 + th.norm(negfeat) ** 2) / 2
+                regularizer = (th.norm(uidfeat) ** 2 + th.norm(posfeat) ** 2) / 2 + th.norm(negfeat) ** 2 / 2
                 emb_loss = lmbd * regularizer / uidfeat.shape[0]
                 optimizer.zero_grad()
                 loss = mf_loss + emb_loss
@@ -375,9 +373,9 @@ def config():
     parser.add_argument('--model_activation', type=str, default="leaky")
     parser.add_argument('--gcn_dropout', type=float, default=0.3)
     parser.add_argument('--gcn_agg_norm_symm', type=bool, default=True)
-    parser.add_argument('--gcn_agg_units', type=int, default=10)
+    parser.add_argument('--gcn_agg_units', type=int, default=500)
     parser.add_argument('--gcn_agg_accum', type=str, default="sum")
-    parser.add_argument('--gcn_out_units', type=int, default=10)
+    parser.add_argument('--gcn_out_units', type=int, default=75)
     parser.add_argument('--gen_r_num_basis_func', type=int, default=1)
     parser.add_argument('--train_max_iter', type=int, default=2000)
     parser.add_argument('--train_log_interval', type=int, default=1)
