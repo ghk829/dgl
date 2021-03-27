@@ -203,6 +203,7 @@ class GCMCLayer(nn.Module):
                                                     device=device,
                                                     dropout_rate=dropout_rate)
         self.conv = dglnn.HeteroGraphConv(subConv, aggregate=agg)
+        self.leaky_relu = nn.LeakyReLU(0.2)
         self.agg_act = get_activation(agg_act)
         self.out_act = get_activation(out_act)
         self.device = device
@@ -264,10 +265,15 @@ class GCMCLayer(nn.Module):
         # fc and non-linear
         ufeat = self.agg_act(ufeat)
         ifeat = self.agg_act(ifeat)
+
+        ufeat = self.leaky_relu(ufeat)
+        ifeat = self.leaky_relu(ifeat)
+
         ufeat = self.dropout(ufeat)
         ifeat = self.dropout(ifeat)
-        ufeat = self.ufc(ufeat)
-        ifeat = self.ifc(ifeat)
+
+        ufeat = th.nn.functional.normalize(ufeat, dim=1, p=2)
+        ifeat = th.nn.functional.normalize(ifeat, dim=1, p=2)
         return self.out_act(ufeat), self.out_act(ifeat)
 
 class BiDecoder(nn.Module):
