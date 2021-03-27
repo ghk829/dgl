@@ -48,8 +48,7 @@ class Net(nn.Module):
                                  share_user_item_param=args.share_param,
                                  device=args.device)
 
-        self.decoder = BiDecoder()
-        # self.decoder = DotProduct()
+        self.decoder = DotProduct()
 
     def forward(self, enc_graph, dec_graph, ufeat, ifeat):
         user_out, item_out = self.encoder(
@@ -350,7 +349,7 @@ def config():
     parser.add_argument('--gcn_agg_norm_symm', type=bool, default=True)
     parser.add_argument('--gcn_agg_units', type=int, default=500)
     parser.add_argument('--gcn_agg_accum', type=str, default="sum")
-    parser.add_argument('--gcn_out_units', type=int, default=75)
+    parser.add_argument('--gcn_out_units', type=int, default=20)
     parser.add_argument('--gen_r_num_basis_func', type=int, default=1)
     parser.add_argument('--train_max_iter', type=int, default=2000)
     parser.add_argument('--train_log_interval', type=int, default=1)
