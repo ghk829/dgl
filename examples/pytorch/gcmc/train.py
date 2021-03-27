@@ -117,7 +117,7 @@ def evaluate_others(args, net, dataset, segment='valid'):
 
     from sklearn.metrics import confusion_matrix, precision_recall_fscore_support
 
-    pred_ratings = (real_pred_ratings > 0.5).long().numpy()
+    pred_ratings = (real_pred_ratings > 0.5).long().cpu().numpy()
     real_ratings = rating_values.numpy()
     cm = confusion_matrix(real_ratings, pred_ratings)
     print('confusion matrix')
@@ -173,7 +173,7 @@ def evaluate_ndcg(args, net, dataset, segment='valid'):
         items = [int(e) for e in items]
         gt[userid] = items
         #pred = (ufeat[dataset.global_user_id_map[userid]] @ ifeat.T).argsort(descending=True)[:100].numpy().tolist()
-        pred = net.inference(ufeat[dataset.global_user_id_map[userid]], ifeat).sort(descending=True)[1][:100].numpy().tolist()
+        pred = net.inference(ufeat[dataset.global_user_id_map[userid]], ifeat).sort(descending=True)[1][:100].cpu().numpy().tolist()
         preds[userid] = dataset.item_map.inverse_transform(pred).tolist()
 
     return ndcg(preds, gt)
@@ -257,7 +257,7 @@ def train(args):
                 pos_scores = uidfeat @ posfeat.T
                 neg_scores = uidfeat @ negfeat.T
 
-                lmbd = 1e-5
+                lmbd = 1e-2
                 mf_loss = nn.LogSigmoid()(pos_scores - neg_scores).mean()
                 mf_loss = -1 * mf_loss
 
@@ -274,6 +274,31 @@ def train(args):
                                            dataset.user_feature, dataset.movie_feature)
                 count_step += 1
 
+        if batches:
+            uidfeat = ufeat[[e[0] for e in batches]]
+            posfeat = ifeat[[e[1] for e in batches]]
+            negfeat = ifeat[[e[2] for e in batches]]
+
+            pos_scores = uidfeat @ posfeat.T
+            neg_scores = uidfeat @ negfeat.T
+
+            lmbd = 1e-2
+            mf_loss = nn.LogSigmoid()(pos_scores - neg_scores).mean()
+            mf_loss = -1 * mf_loss
+
+            regularizer = (th.norm(uidfeat) ** 2 + th.norm(posfeat) ** 2 + th.norm(negfeat) ** 2) / 2
+            emb_loss = lmbd * regularizer / uidfeat.shape[0]
+            loss = mf_loss + emb_loss
+            count_loss += loss.item()
+            optimizer.zero_grad()
+            loss.backward()
+            nn.utils.clip_grad_norm_(net.parameters(), args.train_grad_clip)
+            optimizer.step()
+            batches = []
+            ufeat, ifeat = net.encoder(dataset.train_enc_graph,
+                                       dataset.user_feature, dataset.movie_feature)
+            count_step += 1
+
         if iter_idx > 3:
             dur.append(time.time() - t0)
 
@@ -285,7 +310,7 @@ def train(args):
             train_loss_logger.log(iter=iter_idx,
                                   loss=count_loss / (count_step + 1))
             logging_str = "Iter={}, loss={:.4f}, rmse={:.4f}, time={:.4f}".format(
-                iter_idx, count_loss/iter_idx, count_rmse/count_num,
+                iter_idx, count_loss/(count_step + 1), count_rmse/count_num,
                 np.average(dur))
             count_rmse = 1
             count_num = 1
