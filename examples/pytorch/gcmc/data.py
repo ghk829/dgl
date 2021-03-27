@@ -92,7 +92,7 @@ class JukeboxDataset(DGLDataset):
 
 
 
-        train_rating_pairs, train_rating_values = self._generate_pair_value(df)
+        train_rating_pairs, train_rating_values = self._generate_pair_value(train)
 
         self.train_enc_graph = self._generate_enc_graph(train_rating_pairs, train_rating_values, add_support=True)
         self.train_dec_graph = self._generate_dec_graph(train_rating_pairs)

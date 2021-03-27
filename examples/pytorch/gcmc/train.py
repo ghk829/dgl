@@ -33,7 +33,8 @@ class DotProduct(nn.Module):
 
     def inference(self, uidfeat, ifeat):
         with th.no_grad():
-            return self.dropout(uidfeat) @ self.Q @ self.dropout(ifeat).T
+            return uidfeat @ ifeat.T
+            #return self.dropout(uidfeat) @ self.Q @ self.dropout(ifeat).T
 
 class Net(nn.Module):
     def __init__(self, args):
@@ -252,7 +253,7 @@ def train(args):
         ufeat, ifeat = net.encoder(dataset.train_enc_graph,
                                    dataset.user_feature, dataset.movie_feature)
         from tqdm import tqdm
-        for row in tqdm(list(dataset.train.itertuples())):
+        for row in tqdm(random.sample(list(dataset.train.itertuples()), 100000)):
             user, item, rating = row.user_id, row.item_id, row.rating
             userid = dataset.global_user_id_map[user]
             observed = dataset.train[dataset.train['user_id'] == user]['item_id'].unique().tolist()
@@ -268,19 +269,19 @@ def train(args):
             posfeat = ifeat[[e[1] for e in bt]]
             negfeat = ifeat[[e[2] for e in bt]]
 
-            pos_scores = net.decoder.dropout(uidfeat) @ net.decoder.Q @ net.decoder.dropout(posfeat).T
-            neg_scores = net.decoder.dropout(uidfeat) @ net.decoder.Q @ net.decoder.dropout(negfeat).T
+            pos_scores = uidfeat @ posfeat.T # net.decoder.dropout(uidfeat) @ net.decoder.Q @ net.decoder.dropout(posfeat).T
+            neg_scores = uidfeat @ negfeat.T #net.decoder.dropout(uidfeat) @ net.decoder.Q @ net.decoder.dropout(negfeat).T
 
-            lmbd = 1e-2
+            lmbd = 1e-4
             mf_loss = -nn.BCELoss()(th.sigmoid(pos_scores), th.ones_like(pos_scores)) + nn.LogSigmoid()(pos_scores - neg_scores).mean()
             mf_loss = -1 * mf_loss
 
             regularizer = (th.norm(uidfeat,dim=1)**2).mean() + (th.norm(posfeat,dim=1)**2).mean() + (th.norm(negfeat,dim=1)**2).mean()
             emb_loss = lmbd * regularizer
-            optimizer.zero_grad()
-            loss = mf_loss + emb_loss
             print('mf_loss', mf_loss)
             print('emb_loss', emb_loss)
+            optimizer.zero_grad()
+            loss = mf_loss + emb_loss
             count_loss += loss.item()
             loss.backward()
             optimizer.step()
@@ -303,7 +304,6 @@ def train(args):
                 np.average(dur))
             count_rmse = 1
             count_num = 1
-            count_step = 0
 
         if iter_idx % args.train_valid_interval == 0:
             valid_rmse = evaluate(args=args, net=net, dataset=dataset, segment='valid')
