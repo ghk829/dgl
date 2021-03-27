@@ -280,20 +280,20 @@ def train(args):
             posfeat = ifeat[[e[1] for e in batches]]
             negfeat = ifeat[[e[2] for e in batches]]
 
-            pos_scores = uidfeat @ posfeat.T
-            neg_scores = uidfeat @ negfeat.T
+            pos_scores = net.decoder.dropout(uidfeat) @ net.decoder.Q @ net.decoder.dropout(posfeat).T
+            neg_scores = net.decoder.dropout(uidfeat) @ net.decoder.Q @ net.decoder.dropout(negfeat).T
 
-            lmbd = 1e-2
-            mf_loss = nn.LogSigmoid()(pos_scores - neg_scores).mean()
+            lmbd = 1e-4
+            mf_loss = -nn.BCELoss()(th.sigmoid(pos_scores), th.ones_like(pos_scores)) + nn.LogSigmoid()(
+                pos_scores - neg_scores).mean()
             mf_loss = -1 * mf_loss
 
-            regularizer = (th.norm(uidfeat) ** 2 + th.norm(posfeat) ** 2 + th.norm(negfeat) ** 2) / 2
+            regularizer = (th.norm(uidfeat) ** 2 + th.norm(posfeat) ** 2) / 2 + th.norm(negfeat) ** 2 / 2
             emb_loss = lmbd * regularizer / uidfeat.shape[0]
+            optimizer.zero_grad()
             loss = mf_loss + emb_loss
             count_loss += loss.item()
-            optimizer.zero_grad()
             loss.backward()
-            nn.utils.clip_grad_norm_(net.parameters(), args.train_grad_clip)
             optimizer.step()
             batches = []
             ufeat, ifeat = net.encoder(dataset.train_enc_graph,
