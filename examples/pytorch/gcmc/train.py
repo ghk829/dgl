@@ -19,7 +19,7 @@ class DotProduct(nn.Module):
     def __init__(self,src_in_units,dst_in_units):
         super(DotProduct, self).__init__()
         self.dropout = nn.Dropout(0.1)
-        self.Q = nn.Parameter(th.randn(src_in_units, dst_in_units))
+        self.Q = nn.Parameter(th.randn(src_in_units, src_in_units))
 
     def forward(self, dec_graph, ufeat, ifeat):
 
