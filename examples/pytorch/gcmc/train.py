@@ -251,6 +251,29 @@ def train(args):
                 if sample not in observed:
                     batches.append((userid, dataset.global_item_id_map[item], dataset.global_item_id_map[sample]))
                     break
+            if len(batches) == 10240:
+                uidfeat = ufeat[[e[0] for e in batches]]
+                posfeat = ifeat[[e[1] for e in batches]]
+                negfeat = ifeat[[e[2] for e in batches]]
+
+                pos_scores = net.decoder.dropout(uidfeat) @ net.decoder.Q @ net.decoder.dropout(posfeat).T
+                neg_scores = net.decoder.dropout(uidfeat) @ net.decoder.Q @ net.decoder.dropout(negfeat).T
+
+                lmbd = 1e-4
+                mf_loss = -nn.BCELoss()(th.sigmoid(pos_scores), th.ones_like(pos_scores)) + nn.LogSigmoid()(pos_scores - neg_scores).mean()
+                mf_loss = -1 * mf_loss
+
+                regularizer = (th.norm(uidfeat) ** 2 + th.norm(posfeat) ** 2) / 2 + th.norm(negfeat) ** 2 / 2
+                emb_loss = lmbd * regularizer / uidfeat.shape[0]
+                optimizer.zero_grad()
+                loss = mf_loss + emb_loss
+                count_loss += loss.item()
+                loss.backward()
+                optimizer.step()
+                batches = []
+                ufeat, ifeat = net.encoder(dataset.train_enc_graph,
+                                           dataset.user_feature, dataset.movie_feature)
+                count_step += 1
 
         if batches:
             uidfeat = ufeat[[e[0] for e in batches]]
