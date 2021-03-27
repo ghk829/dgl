@@ -13,12 +13,12 @@ train['item'] = train['item'].apply(lambda x: x - 1)
 
 trainset = {}
 for user in train['user'].unique():
-    itemids = train[train['user'] == user]['item'].tolist()
+    itemids = train[train['user'] == user].sort_values('count',ascending=False)['item'].tolist()
     trainset[user] = itemids
 
 testset = {}
 for user in test['user'].unique():
-    itemids = test[test['user'] == user]['item'].tolist()
+    itemids = test[test['user'] == user].sort_values('count',ascending=False)['item'].tolist()
     testset[user] = itemids
 
 with open('jukebox/train.txt', 'w') as f:
