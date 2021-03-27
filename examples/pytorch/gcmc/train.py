@@ -261,7 +261,8 @@ def train(args):
                 neg_scores = uidfeat @ net.decoder.Q @ negfeat.T
 
                 lmbd = 1e-2
-                mf_loss = nn.LogSigmoid()(pos_scores - neg_scores).mean()
+                mf_loss = -nn.BCELoss()(th.sigmoid(posfeat), th.ones_like(posfeat)) + nn.LogSigmoid()(
+                    pos_scores - neg_scores).mean()
                 mf_loss = -1 * mf_loss
 
                 regularizer = (th.norm(uidfeat) ** 2 + th.norm(posfeat) ** 2 + th.norm(negfeat) ** 2) / 2
