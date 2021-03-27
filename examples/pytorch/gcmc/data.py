@@ -5,10 +5,14 @@ import re
 import pandas as pd
 import scipy.sparse as sp
 import torch as th
+import random
 
 import dgl
 from dgl.data.utils import download, extract_archive, get_download_dir
 from utils import to_etype_name
+import torch
+from sklearn.preprocessing import LabelEncoder
+from sklearn.model_selection import train_test_split
 
 _urls = {
     'ml-100k' : 'http://files.grouplens.org/datasets/movielens/ml-100k.zip',
@@ -24,6 +28,172 @@ GENRES_ML_100K =\
      'Thriller', 'War', 'Western']
 GENRES_ML_1M = GENRES_ML_100K[1:]
 GENRES_ML_10M = GENRES_ML_100K + ['IMAX']
+
+from dgl.data import DGLDataset
+class JukeboxDataset(DGLDataset):
+
+    def __init__(self,filepath):
+        self.filepath = filepath
+        self._symm = True
+        self.user_map = LabelEncoder()
+        self.item_map = LabelEncoder()
+        super(JukeboxDataset,self).__init__(name='jukebox')
+
+    def process(self):
+        columns = ['user_id', 'item_id', 'count']
+        df = pd.read_csv(self.filepath, header=None, sep=' ')
+        df.columns = columns
+        df['rating'] = df['count'].apply(lambda x: 1)
+        unique_item_list = df['item_id'].unique().tolist()
+        from tqdm import tqdm
+        for userid in tqdm(df['user_id'].unique()):
+            res = set()
+            observed = df[df['user_id'] == userid]['item_id'].tolist()
+            while len(res) < 2:
+                sample = random.choice(unique_item_list)
+                if sample not in observed:
+                    res.add(sample)
+            negative_feedback = pd.DataFrame([[userid, e, 0] for e in res])
+            negative_feedback.columns = ['user_id', 'item_id', 'rating']
+            df = pd.concat([df, negative_feedback])
+        edge_src = torch.from_numpy(df['user_id'].to_numpy())
+        edge_dst = torch.from_numpy(df['item_id'].to_numpy())
+        self.global_user_id_map = {}
+        for id, mapped in zip(df['user_id'], self.user_map.fit_transform(df['user_id'])):
+            self.global_user_id_map[id] = mapped
+
+        self.global_item_id_map = {}
+        for id, mapped in zip(df['item_id'], self.item_map.fit_transform(df['item_id'])):
+            self.global_item_id_map[id] = mapped
+
+        self.labels = torch.from_numpy(df['rating'].to_numpy())
+        self.possible_rating_values = np.unique(df["rating"].values)
+
+        train, valid = train_test_split(df, test_size=0.2)
+        valid[valid['rating'] == 1].to_csv('dataset/test_data.txt', sep=' ', header=False, index=False)
+        gt = {}
+        for line in open('dataset/test_data.txt'):
+            user, item, count, rating = line.strip().split()
+            if user not in gt:
+               gt[user] = []
+            gt[user].append((-int(float(count)), item))
+
+        for vs in gt.values():
+            vs.sort()
+            vs[:] = [v[1] for v in vs]
+
+        self.ref_test_data = gt
+
+        self.num_user = len(edge_src.unique())
+        self.num_item = len(edge_dst.unique())
+        self.user_feature_shape = (self.num_user, self.num_user)
+        self.movie_feature_shape = (self.num_item, self.num_item)
+
+
+
+        train_rating_pairs, train_rating_values = self._generate_pair_value(train)
+
+        self.train_enc_graph = self._generate_enc_graph(train_rating_pairs, train_rating_values, add_support=True)
+        self.train_dec_graph = self._generate_dec_graph(train_rating_pairs)
+        self.train_labels = torch.from_numpy(train_rating_values)
+        self.train_truths = torch.from_numpy(train_rating_values)
+
+        valid_rating_pairs, valid_rating_values = self._generate_pair_value(valid)
+
+        self.valid_enc_graph = self._generate_enc_graph(valid_rating_pairs, valid_rating_values, add_support=True)
+        self.valid_dec_graph = self._generate_dec_graph(valid_rating_pairs)
+        self.valid_labels = torch.from_numpy(valid_rating_values)
+        self.valid_truths = torch.from_numpy(valid_rating_values)
+
+        self.test_enc_graph = self.train_enc_graph
+        self.test_dec_graph = self.train_dec_graph
+        self.test_labels = self.train_labels
+        self.test_truths = self.train_truths
+
+        self.user_feature = None
+        self.movie_feature = None
+
+    def _generate_pair_value(self, rating_info):
+        rating_pairs = (np.array([self.global_user_id_map[ele] for ele in rating_info["user_id"]],
+                                 dtype=np.int64),
+                        np.array([self.global_item_id_map[ele] for ele in rating_info["item_id"]],
+                                 dtype=np.int64))
+        rating_values = rating_info["rating"].values.astype(np.float32)
+        return rating_pairs, rating_values
+
+    def _generate_enc_graph(self, rating_pairs, rating_values, add_support=False):
+        user_movie_R = np.zeros((self.num_user, self.num_item), dtype=np.float32)
+        user_movie_R[rating_pairs] = rating_values
+
+        data_dict = dict()
+        num_nodes_dict = {'user': self.num_user, 'item': self.num_item}
+        rating_row, rating_col = rating_pairs
+        for rating in self.possible_rating_values:
+            ridx = np.where(rating_values == rating)
+            rrow = rating_row[ridx]
+            rcol = rating_col[ridx]
+            rating = to_etype_name(rating)
+            data_dict.update({
+                ('user', str(rating), 'item'): (rrow, rcol),
+                ('item', 'rev-%s' % str(rating), 'user'): (rcol, rrow)
+            })
+        graph = dgl.heterograph(data_dict, num_nodes_dict=num_nodes_dict)
+
+        # sanity check
+        assert len(rating_pairs[0]) == sum([graph.number_of_edges(et) for et in graph.etypes]) // 2
+
+        if add_support:
+            def _calc_norm(x):
+                x = x.numpy().astype('float32')
+                x[x == 0.] = np.inf
+                x = th.FloatTensor(1. / np.sqrt(x))
+                return x.unsqueeze(1)
+
+            user_ci = []
+            user_cj = []
+            movie_ci = []
+            movie_cj = []
+            for r in self.possible_rating_values:
+                r = to_etype_name(r)
+                user_ci.append(graph['rev-%s' % r].in_degrees())
+                movie_ci.append(graph[r].in_degrees())
+                if self._symm:
+                    user_cj.append(graph[r].out_degrees())
+                    movie_cj.append(graph['rev-%s' % r].out_degrees())
+                else:
+                    user_cj.append(th.zeros((self.num_user,)))
+                    movie_cj.append(th.zeros((self.num_item,)))
+            user_ci = _calc_norm(sum(user_ci))
+            movie_ci = _calc_norm(sum(movie_ci))
+            if self._symm:
+                user_cj = _calc_norm(sum(user_cj))
+                movie_cj = _calc_norm(sum(movie_cj))
+            else:
+                user_cj = th.ones(self.num_user, )
+                movie_cj = th.ones(self.num_item, )
+            graph.nodes['user'].data.update({'ci': user_ci, 'cj': user_cj})
+            graph.nodes['item'].data.update({'ci': movie_ci, 'cj': movie_cj})
+
+        return graph
+
+    def _generate_dec_graph(self, rating_pairs):
+        ones = np.ones_like(rating_pairs[0])
+        user_movie_ratings_coo = sp.coo_matrix(
+            (ones, rating_pairs),
+            shape=(self.num_user, self.num_item), dtype=np.float32)
+        g = dgl.bipartite_from_scipy(user_movie_ratings_coo, utype='_U', etype='_E', vtype='_V')
+        return dgl.heterograph({('user', 'rate', 'item'): g.edges()},
+                               num_nodes_dict={'user': self.num_user, 'item': self.num_item})
+
+
+
+        #self.possible_rating_values = self.labels.unique()
+
+    def __getitem__(self, item):
+        return self.graph, self.labels
+
+    def __len__(self):
+        return 1
 
 class MovieLens(object):
     """MovieLens dataset used by GCMC model

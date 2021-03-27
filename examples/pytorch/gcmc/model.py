@@ -248,7 +248,7 @@ class GCMCLayer(nn.Module):
         new_ifeat : torch.Tensor
             New movie features
         """
-        in_feats = {'user' : ufeat, 'movie' : ifeat}
+        in_feats = {'user' : ufeat, 'item' : ifeat}
         mod_args = {}
         for i, rating in enumerate(self.rating_vals):
             rating = to_etype_name(rating)
@@ -257,7 +257,7 @@ class GCMCLayer(nn.Module):
             mod_args[rev_rating] = (self.W_r[rev_rating] if self.W_r is not None else None,)
         out_feats = self.conv(graph, in_feats, mod_args=mod_args)
         ufeat = out_feats['user']
-        ifeat = out_feats['movie']
+        ifeat = out_feats['item']
         ufeat = ufeat.view(ufeat.shape[0], -1)
         ifeat = ifeat.view(ifeat.shape[0], -1)
 
@@ -299,7 +299,7 @@ class BiDecoder(nn.Module):
     def __init__(self,
                  in_units,
                  num_classes,
-                 num_basis=2,
+                 num_basis=1,
                  dropout_rate=0.0):
         super(BiDecoder, self).__init__()
         self._num_basis = num_basis
@@ -335,7 +335,7 @@ class BiDecoder(nn.Module):
         with graph.local_scope():
             ufeat = self.dropout(ufeat)
             ifeat = self.dropout(ifeat)
-            graph.nodes['movie'].data['h'] = ifeat
+            graph.nodes['item'].data['h'] = ifeat
             basis_out = []
             for i in range(self._num_basis):
                 graph.nodes['user'].data['h'] = ufeat @ self.Ps[i]
@@ -344,6 +344,12 @@ class BiDecoder(nn.Module):
             out = th.cat(basis_out, dim=1)
             out = self.combine_basis(out)
         return out
+
+    def inference(self, uidfeat, ifeat):
+        unrate_predict = (uidfeat @ self.Ps[0]) @ ifeat.T
+        rate_predict = (uidfeat @ self.Ps[0]) @ ifeat.T
+        prediction = th.exp(rate_predict) / (th.exp(rate_predict) + th.exp(unrate_predict))
+        return prediction
 
 class DenseBiDecoder(nn.Module):
     r"""Dense bi-linear decoder.

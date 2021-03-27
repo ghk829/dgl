@@ -10,9 +10,23 @@ import string
 import numpy as np
 import torch as th
 import torch.nn as nn
-from data import MovieLens
+from data import MovieLens, JukeboxDataset
 from model import BiDecoder, GCMCLayer
+import dgl.function as fn
 from utils import get_activation, get_optimizer, torch_total_param_num, torch_net_info, MetricLogger
+
+class DotProduct(nn.Module):
+    def __init__(self):
+        super(DotProduct, self).__init__()
+
+    def forward(self, graph, ufeat, ifeat):
+
+        with graph.local_scope():
+            graph.nodes['item'].data['h'] = ifeat
+            graph.nodes['user'].data['h'] = ufeat
+            graph.apply_edges(fn.u_dot_v('h', 'h', 'sr'))
+            out = graph.edata['sr']
+        return out
 
 class Net(nn.Module):
     def __init__(self, args):
@@ -28,19 +42,60 @@ class Net(nn.Module):
                                  agg_act=self._act,
                                  share_user_item_param=args.share_param,
                                  device=args.device)
+
         self.decoder = BiDecoder(in_units=args.gcn_out_units,
                                  num_classes=len(args.rating_vals),
                                  num_basis=args.gen_r_num_basis_func)
+        # self.decoder = DotProduct()
 
     def forward(self, enc_graph, dec_graph, ufeat, ifeat):
-        user_out, movie_out = self.encoder(
+        user_out, item_out = self.encoder(
             enc_graph,
             ufeat,
             ifeat)
-        pred_ratings = self.decoder(dec_graph, user_out, movie_out)
+        pred_ratings = self.decoder(dec_graph, user_out, item_out)
         return pred_ratings
 
+    def inference(self, uidfeat, ifeat):
+        with th.no_grad():
+            return self.decoder.inference(uidfeat, ifeat)
+
 def evaluate(args, net, dataset, segment='valid'):
+    possible_rating_values = dataset.possible_rating_values
+    nd_possible_rating_values = th.FloatTensor(possible_rating_values).to(args.device)
+
+    if segment == "valid":
+        rating_values = dataset.valid_truths
+        enc_graph = dataset.valid_enc_graph
+        dec_graph = dataset.valid_dec_graph
+    elif segment == "test":
+        rating_values = dataset.test_truths
+        enc_graph = dataset.test_enc_graph
+        dec_graph = dataset.test_dec_graph
+    else:
+        raise NotImplementedError
+
+    # Evaluate RMSE
+    net.eval()
+    with th.no_grad():
+
+        pred_ratings = net(enc_graph, dec_graph,
+                           dataset.user_feature, dataset.movie_feature)
+    real_pred_ratings = (th.softmax(pred_ratings, dim=1) *
+                         nd_possible_rating_values.view(1, -1)).sum(dim=1)
+
+    rmse = ((real_pred_ratings - rating_values) ** 2.).mean().item()
+    rmse = np.sqrt(rmse)
+
+    from sklearn.metrics import confusion_matrix, precision_recall_fscore_support
+
+    pred_ratings = (real_pred_ratings > 0.5).long().numpy()
+    real_ratings = rating_values.numpy()
+
+    return rmse
+
+
+def evaluate_others(args, net, dataset, segment='valid'):
     possible_rating_values = dataset.possible_rating_values
     nd_possible_rating_values = th.FloatTensor(possible_rating_values).to(args.device)
 
@@ -62,13 +117,76 @@ def evaluate(args, net, dataset, segment='valid'):
                            dataset.user_feature, dataset.movie_feature)
     real_pred_ratings = (th.softmax(pred_ratings, dim=1) *
                          nd_possible_rating_values.view(1, -1)).sum(dim=1)
-    rmse = ((real_pred_ratings - rating_values) ** 2.).mean().item()
-    rmse = np.sqrt(rmse)
-    return rmse
+
+    from sklearn.metrics import confusion_matrix, precision_recall_fscore_support
+
+    pred_ratings = (real_pred_ratings > 0.5).long().numpy()
+    real_ratings = rating_values.numpy()
+    cm = confusion_matrix(real_ratings, pred_ratings)
+    print('confusion matrix')
+    print(cm)
+    precision, recall, fscore, support = precision_recall_fscore_support(real_ratings, pred_ratings)
+
+    return precision, recall, fscore, support
+
+def ndcg(recs, gt):
+    import math
+    Q, S = 0.0, 0.0
+    for u, vs in gt.items():
+        rec = recs.get(u, [])
+        if not rec:
+            continue
+
+        idcg = sum([1.0 / math.log(i + 2, 2) for i in range(len(vs))])
+        dcg = 0.0
+        for i, r in enumerate(rec):
+            if r not in vs:
+                continue
+            rank = i + 1
+            dcg += 1.0 / math.log(rank + 1, 2)
+        ndcg = dcg / idcg
+        S += ndcg
+        Q += 1
+    return S / Q
+
+def evaluate_ndcg(args, net, dataset, segment='valid'):
+    possible_rating_values = dataset.possible_rating_values
+    nd_possible_rating_values = th.FloatTensor(possible_rating_values).to(args.device)
+
+    if segment == "valid":
+        rating_values = dataset.valid_truths
+        enc_graph = dataset.valid_enc_graph
+        dec_graph = dataset.valid_dec_graph
+    elif segment == "test":
+        rating_values = dataset.test_truths
+        enc_graph = dataset.test_enc_graph
+        dec_graph = dataset.test_dec_graph
+    else:
+        raise NotImplementedError
+
+    # Evaluate RMSE
+    net.eval()
+    with th.no_grad():
+        ufeat, ifeat = net.encoder(enc_graph,
+                           dataset.user_feature, dataset.movie_feature)
+    preds = {}
+    gt = {}
+    for userid, items in dataset.ref_test_data.items():
+        userid = int(userid)
+        items = [int(e) for e in items]
+        gt[userid] = items
+        #pred = (ufeat[dataset.global_user_id_map[userid]] @ ifeat.T).argsort(descending=True)[:100].numpy().tolist()
+        pred = net.inference(ufeat[dataset.global_user_id_map[userid]], ifeat).argsort(descending=True)[:100].numpy().tolist()
+        preds[userid] = dataset.item_map.inverse_transform(pred).tolist()
+
+    return ndcg(preds, gt)
 
 def train(args):
     print(args)
-    dataset = MovieLens(args.data_name, args.device, use_one_hot_fea=args.use_one_hot_fea, symm=args.gcn_agg_norm_symm,
+    if args.data_name == 'jukebox':
+        dataset = JukeboxDataset('dataset/listen_count.txt')
+    else:
+        dataset = MovieLens(args.data_name, args.device, use_one_hot_fea=args.use_one_hot_fea, symm=args.gcn_agg_norm_symm,
                         test_ratio=args.data_test_ratio, valid_ratio=args.data_valid_ratio)
     print("Loading data finished ...\n")
 
@@ -92,7 +210,7 @@ def train(args):
     ### prepare the logger
     train_loss_logger = MetricLogger(['iter', 'loss', 'rmse'], ['%d', '%.4f', '%.4f'],
                                      os.path.join(args.save_dir, 'train_loss%d.csv' % args.save_id))
-    valid_loss_logger = MetricLogger(['iter', 'rmse'], ['%d', '%.4f'],
+    valid_loss_logger = MetricLogger(['iter', 'ndcg','rmse','precision','recall','fscore','support'], ['%d','%.4f', '%.4f','%s','%s','%s','%s'],
                                      os.path.join(args.save_dir, 'valid_loss%d.csv' % args.save_id))
     test_loss_logger = MetricLogger(['iter', 'rmse'], ['%d', '%.4f'],
                                     os.path.join(args.save_dir, 'test_loss%d.csv' % args.save_id))
@@ -120,7 +238,13 @@ def train(args):
         net.train()
         pred_ratings = net(dataset.train_enc_graph, dataset.train_dec_graph,
                            dataset.user_feature, dataset.movie_feature)
-        loss = rating_loss_net(pred_ratings, train_gt_labels).mean()
+        #loss = rating_loss_net(pred_ratings, train_gt_labels.long()).mean()
+        loss = rating_loss_net(pred_ratings, train_gt_labels.long()).mean()
+        # real_negative_index = [i for i, e in enumerate(train_gt_labels.long()) if e == 0]
+        # model_negative_index = [i for i, e in enumerate(pred_ratings) if e[0] > e[1]]
+        # hit_rate = len([i for i in model_negative_index if real_negative_index])/ len(real_negative_index)
+        # print(hit_rate)
+        train_gt_labels.long()
         count_loss += loss.item()
         optimizer.zero_grad()
         loss.backward()
@@ -151,7 +275,11 @@ def train(args):
 
         if iter_idx % args.train_valid_interval == 0:
             valid_rmse = evaluate(args=args, net=net, dataset=dataset, segment='valid')
-            valid_loss_logger.log(iter = iter_idx, rmse = valid_rmse)
+            precision, recall, fscore, support = evaluate_others(args=args, net=net, dataset=dataset, segment='valid')
+            ndcg = evaluate_ndcg(args=args, net=net, dataset=dataset, segment='valid')
+            print('ndcg', ndcg, 'precision', precision, 'recall', recall, 'fscore', fscore, 'support', support)
+            valid_loss_logger.log(iter=iter_idx, ndcg=ndcg, rmse=valid_rmse, precision=precision, recall=recall, fscore=fscore,
+                                  support=support)
             logging_str += ',\tVal RMSE={:.4f}'.format(valid_rmse)
 
             if valid_rmse < best_valid_rmse:
@@ -204,7 +332,7 @@ def config():
     parser.add_argument('--gcn_agg_units', type=int, default=500)
     parser.add_argument('--gcn_agg_accum', type=str, default="sum")
     parser.add_argument('--gcn_out_units', type=int, default=75)
-    parser.add_argument('--gen_r_num_basis_func', type=int, default=2)
+    parser.add_argument('--gen_r_num_basis_func', type=int, default=1)
     parser.add_argument('--train_max_iter', type=int, default=2000)
     parser.add_argument('--train_log_interval', type=int, default=1)
     parser.add_argument('--train_valid_interval', type=int, default=1)
