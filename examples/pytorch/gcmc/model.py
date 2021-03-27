@@ -269,9 +269,10 @@ class GCMCLayer(nn.Module):
         ufeat = self.dropout(ufeat)
         ifeat = self.dropout(ifeat)
 
-        ufeat = th.nn.functional.normalize(ufeat, dim=1, p=2)
-        ifeat = th.nn.functional.normalize(ifeat, dim=1, p=2)
-        return ufeat, ifeat #self.out_act(ufeat), self.out_act(ifeat)
+        ufeat = self.ufc(ufeat)
+        ifeat = self.ifc(ifeat)
+
+        return self.out_act(ufeat), self.out_act(ifeat)
 
 class BiDecoder(nn.Module):
     r"""Bi-linear decoder.

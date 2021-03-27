@@ -16,8 +16,10 @@ import dgl.function as fn
 from utils import get_activation, get_optimizer, torch_total_param_num, torch_net_info, MetricLogger
 
 class DotProduct(nn.Module):
-    def __init__(self):
+    def __init__(self,src_in_units,dst_in_units):
         super(DotProduct, self).__init__()
+
+        self.Q = nn.Parameter(th.randn(src_in_units, dst_in_units))
 
     def forward(self, dec_graph, ufeat, ifeat):
 
@@ -31,7 +33,7 @@ class DotProduct(nn.Module):
 
     def inference(self, uidfeat, ifeat):
 
-        return uidfeat @ ifeat.T
+        return uidfeat @ self.Q @ ifeat.T
 
 class Net(nn.Module):
     def __init__(self, args):
@@ -48,7 +50,8 @@ class Net(nn.Module):
                                  share_user_item_param=args.share_param,
                                  device=args.device)
 
-        self.decoder = DotProduct()
+        self.decoder = DotProduct(args.gcn_agg_units,
+                                 args.gcn_out_units)
 
     def forward(self, enc_graph, dec_graph, ufeat, ifeat):
         user_out, item_out = self.encoder(
@@ -251,11 +254,11 @@ def train(args):
                     batches.append((userid, dataset.global_item_id_map[item], dataset.global_item_id_map[sample]))
             if len(batches) == 1024:
                 uidfeat = ufeat[[ e[0] for e in batches]]
-                posfeat = ifeat[[ e[1] for e in batches]]
+                posfeat = ifeat[[e[1] for e in batches]]
                 negfeat = ifeat[[e[2] for e in batches]]
 
-                pos_scores = uidfeat @ posfeat.T
-                neg_scores = uidfeat @ negfeat.T
+                pos_scores = uidfeat @ net.decoder.Q @ posfeat.T
+                neg_scores = uidfeat @ net.decoder.Q @ negfeat.T
 
                 lmbd = 1e-2
                 mf_loss = nn.LogSigmoid()(pos_scores - neg_scores).mean()
@@ -263,11 +266,10 @@ def train(args):
 
                 regularizer = (th.norm(uidfeat) ** 2 + th.norm(posfeat) ** 2 + th.norm(negfeat) ** 2) / 2
                 emb_loss = lmbd * regularizer / uidfeat.shape[0]
+                optimizer.zero_grad()
                 loss = mf_loss + emb_loss
                 count_loss += loss.item()
-                optimizer.zero_grad()
                 loss.backward()
-                nn.utils.clip_grad_norm_(net.parameters(), args.train_grad_clip)
                 optimizer.step()
                 batches = []
                 ufeat, ifeat = net.encoder(dataset.train_enc_graph,
@@ -372,9 +374,9 @@ def config():
     parser.add_argument('--model_activation', type=str, default="leaky")
     parser.add_argument('--gcn_dropout', type=float, default=0.3)
     parser.add_argument('--gcn_agg_norm_symm', type=bool, default=True)
-    parser.add_argument('--gcn_agg_units', type=int, default=30)
+    parser.add_argument('--gcn_agg_units', type=int, default=10)
     parser.add_argument('--gcn_agg_accum', type=str, default="sum")
-    parser.add_argument('--gcn_out_units', type=int, default=20)
+    parser.add_argument('--gcn_out_units', type=int, default=10)
     parser.add_argument('--gen_r_num_basis_func', type=int, default=1)
     parser.add_argument('--train_max_iter', type=int, default=2000)
     parser.add_argument('--train_log_interval', type=int, default=1)
