@@ -274,7 +274,7 @@ def train(args):
             mf_loss = -1 * mf_loss
 
             regularizer = (th.norm(uidfeat,dim=1)**2).mean() + (th.norm(posfeat,dim=1)**2).mean() + (th.norm(negfeat,dim=1)**2).mean()
-            emb_loss = lmbd * regularizer / uidfeat.shape[0]
+            emb_loss = lmbd * regularizer
             optimizer.zero_grad()
             loss = mf_loss + emb_loss
             count_loss += loss.item()
