@@ -19,14 +19,19 @@ class DotProduct(nn.Module):
     def __init__(self):
         super(DotProduct, self).__init__()
 
-    def forward(self, graph, ufeat, ifeat):
+    def forward(self, dec_graph, ufeat, ifeat):
 
-        with graph.local_scope():
-            graph.nodes['item'].data['h'] = ifeat
-            graph.nodes['user'].data['h'] = ufeat
-            graph.apply_edges(fn.u_dot_v('h', 'h', 'sr'))
-            out = graph.edata['sr']
+        with dec_graph.local_scope():
+            dec_graph.nodes['item'].data['h'] = ifeat
+            dec_graph.nodes['user'].data['h'] = ufeat
+            dec_graph.apply_edges(fn.u_dot_v('h', 'h', 'sr'))
+            out = dec_graph.edata['sr']
+
         return out
+
+    def inference(self, uidfeat, ifeat):
+
+        return uidfeat @ ifeat.T
 
 class Net(nn.Module):
     def __init__(self, args):
@@ -43,9 +48,7 @@ class Net(nn.Module):
                                  share_user_item_param=args.share_param,
                                  device=args.device)
 
-        self.decoder = BiDecoder(in_units=args.gcn_out_units,
-                                 num_classes=len(args.rating_vals),
-                                 num_basis=args.gen_r_num_basis_func)
+        self.decoder = BiDecoder()
         # self.decoder = DotProduct()
 
     def forward(self, enc_graph, dec_graph, ufeat, ifeat):
@@ -55,6 +58,14 @@ class Net(nn.Module):
             ifeat)
         pred_ratings = self.decoder(dec_graph, user_out, item_out)
         return pred_ratings
+
+    def forward2(self, enc_graph, dec_graph, ufeat, ifeat):
+        user_out, item_out = self.encoder(
+            enc_graph,
+            ufeat,
+            ifeat)
+        pred_ratings = self.decoder(dec_graph, user_out, item_out)
+        return pred_ratings, user_out, item_out
 
     def inference(self, uidfeat, ifeat):
         with th.no_grad():
@@ -77,20 +88,7 @@ def evaluate(args, net, dataset, segment='valid'):
 
     # Evaluate RMSE
     net.eval()
-    with th.no_grad():
-
-        pred_ratings = net(enc_graph, dec_graph,
-                           dataset.user_feature, dataset.movie_feature)
-    real_pred_ratings = (th.softmax(pred_ratings, dim=1) *
-                         nd_possible_rating_values.view(1, -1)).sum(dim=1)
-
-    rmse = ((real_pred_ratings - rating_values) ** 2.).mean().item()
-    rmse = np.sqrt(rmse)
-
-    from sklearn.metrics import confusion_matrix, precision_recall_fscore_support
-
-    pred_ratings = (real_pred_ratings > 0.5).long().numpy()
-    real_ratings = rating_values.numpy()
+    rmse = 1
 
     return rmse
 
@@ -176,7 +174,7 @@ def evaluate_ndcg(args, net, dataset, segment='valid'):
         items = [int(e) for e in items]
         gt[userid] = items
         #pred = (ufeat[dataset.global_user_id_map[userid]] @ ifeat.T).argsort(descending=True)[:100].numpy().tolist()
-        pred = net.inference(ufeat[dataset.global_user_id_map[userid]], ifeat).argsort(descending=True)[:100].numpy().tolist()
+        pred = net.inference(ufeat[dataset.global_user_id_map[userid]], ifeat).sort(descending=True)[1][:100].numpy().tolist()
         preds[userid] = dataset.item_map.inverse_transform(pred).tolist()
 
     return ndcg(preds, gt)
@@ -198,7 +196,7 @@ def train(args):
     net = Net(args=args)
     net = net.to(args.device)
     nd_possible_rating_values = th.FloatTensor(dataset.possible_rating_values).to(args.device)
-    rating_loss_net = nn.CrossEntropyLoss()
+    rating_loss_net = nn.MSELoss()
     learning_rate = args.train_lr
     optimizer = get_optimizer(args.train_optimizer)(net.parameters(), lr=learning_rate)
     print("Loading network finished ...\n")
@@ -208,19 +206,19 @@ def train(args):
     train_gt_ratings = dataset.train_truths
 
     ### prepare the logger
-    train_loss_logger = MetricLogger(['iter', 'loss', 'rmse'], ['%d', '%.4f', '%.4f'],
+    train_loss_logger = MetricLogger(['iter', 'loss'], ['%d', '%.4f', '%.4f'],
                                      os.path.join(args.save_dir, 'train_loss%d.csv' % args.save_id))
-    valid_loss_logger = MetricLogger(['iter', 'ndcg','rmse','precision','recall','fscore','support'], ['%d','%.4f', '%.4f','%s','%s','%s','%s'],
+    valid_loss_logger = MetricLogger(['iter', 'ndcg','precision','recall','fscore','support'], ['%d','%.4f', '%.4f','%s','%s','%s','%s'],
                                      os.path.join(args.save_dir, 'valid_loss%d.csv' % args.save_id))
-    test_loss_logger = MetricLogger(['iter', 'rmse'], ['%d', '%.4f'],
+    test_loss_logger = MetricLogger(['iter'], ['%d', '%.4f'],
                                     os.path.join(args.save_dir, 'test_loss%d.csv' % args.save_id))
 
     ### declare the loss information
     best_valid_rmse = np.inf
     no_better_valid = 0
     best_iter = -1
-    count_rmse = 0
-    count_num = 0
+    count_rmse = 1
+    count_num = 1
     count_loss = 0
 
     dataset.train_enc_graph = dataset.train_enc_graph.int().to(args.device)
@@ -236,20 +234,46 @@ def train(args):
         if iter_idx > 3:
             t0 = time.time()
         net.train()
-        pred_ratings = net(dataset.train_enc_graph, dataset.train_dec_graph,
-                           dataset.user_feature, dataset.movie_feature)
-        #loss = rating_loss_net(pred_ratings, train_gt_labels.long()).mean()
-        loss = rating_loss_net(pred_ratings, train_gt_labels.long()).mean()
-        # real_negative_index = [i for i, e in enumerate(train_gt_labels.long()) if e == 0]
-        # model_negative_index = [i for i, e in enumerate(pred_ratings) if e[0] > e[1]]
-        # hit_rate = len([i for i in model_negative_index if real_negative_index])/ len(real_negative_index)
-        # print(hit_rate)
-        train_gt_labels.long()
-        count_loss += loss.item()
-        optimizer.zero_grad()
-        loss.backward()
-        nn.utils.clip_grad_norm_(net.parameters(), args.train_grad_clip)
-        optimizer.step()
+        unique_item_list = dataset.train['item_id'].unique().tolist()
+        batches = []
+        count_step = 0
+        ufeat, ifeat = net.encoder(dataset.train_enc_graph,
+                                   dataset.user_feature, dataset.movie_feature)
+        from tqdm import tqdm
+        for i, row in tqdm(list(dataset.train.iterrows())):
+            user,item,rating = row['user_id'], row['item_id'], row['rating']
+            userid = dataset.global_user_id_map[user]
+            observed = dataset.train[dataset.train['user_id'] == user]['item_id'].tolist()
+            res = set()
+            while len(res) < 1:
+                sample = random.choice(unique_item_list)
+                if sample not in observed:
+                    res.add(sample)
+                    batches.append((userid, dataset.global_item_id_map[item], dataset.global_item_id_map[sample]))
+            if len(batches) == 1024:
+                uidfeat = ufeat[[ e[0] for e in batches]]
+                posfeat = ifeat[[ e[1] for e in batches]]
+                negfeat = ifeat[[e[2] for e in batches]]
+
+                pos_scores = uidfeat @ posfeat.T
+                neg_scores = uidfeat @ negfeat.T
+
+                lmbd = 1e-5
+                mf_loss = nn.LogSigmoid()(pos_scores - neg_scores).mean()
+                mf_loss = -1 * mf_loss
+
+                regularizer = (th.norm(uidfeat) ** 2 + th.norm(posfeat) ** 2 + th.norm(negfeat) ** 2) / 2
+                emb_loss = lmbd * regularizer / uidfeat.shape[0]
+                loss = mf_loss + emb_loss
+                count_loss += loss.item()
+                optimizer.zero_grad()
+                loss.backward()
+                nn.utils.clip_grad_norm_(net.parameters(), args.train_grad_clip)
+                optimizer.step()
+                batches = []
+                ufeat, ifeat = net.encoder(dataset.train_enc_graph,
+                                           dataset.user_feature, dataset.movie_feature)
+                count_step += 1
 
         if iter_idx > 3:
             dur.append(time.time() - t0)
@@ -258,27 +282,22 @@ def train(args):
             print("Total #Param of net: %d" % (torch_total_param_num(net)))
             print(torch_net_info(net, save_path=os.path.join(args.save_dir, 'net%d.txt' % args.save_id)))
 
-        real_pred_ratings = (th.softmax(pred_ratings, dim=1) *
-                             nd_possible_rating_values.view(1, -1)).sum(dim=1)
-        rmse = ((real_pred_ratings - train_gt_ratings) ** 2).sum()
-        count_rmse += rmse.item()
-        count_num += pred_ratings.shape[0]
-
         if iter_idx % args.train_log_interval == 0:
             train_loss_logger.log(iter=iter_idx,
-                                  loss=count_loss/(iter_idx+1), rmse=count_rmse/count_num)
+                                  loss=count_loss / (count_step + 1))
             logging_str = "Iter={}, loss={:.4f}, rmse={:.4f}, time={:.4f}".format(
                 iter_idx, count_loss/iter_idx, count_rmse/count_num,
                 np.average(dur))
-            count_rmse = 0
-            count_num = 0
+            count_rmse = 1
+            count_num = 1
+            count_step = 0
 
         if iter_idx % args.train_valid_interval == 0:
             valid_rmse = evaluate(args=args, net=net, dataset=dataset, segment='valid')
             precision, recall, fscore, support = evaluate_others(args=args, net=net, dataset=dataset, segment='valid')
             ndcg = evaluate_ndcg(args=args, net=net, dataset=dataset, segment='valid')
             print('ndcg', ndcg, 'precision', precision, 'recall', recall, 'fscore', fscore, 'support', support)
-            valid_loss_logger.log(iter=iter_idx, ndcg=ndcg, rmse=valid_rmse, precision=precision, recall=recall, fscore=fscore,
+            valid_loss_logger.log(iter=iter_idx, ndcg=ndcg, precision=precision, recall=recall, fscore=fscore,
                                   support=support)
             logging_str += ',\tVal RMSE={:.4f}'.format(valid_rmse)
 
@@ -288,7 +307,7 @@ def train(args):
                 best_iter = iter_idx
                 test_rmse = evaluate(args=args, net=net, dataset=dataset, segment='test')
                 best_test_rmse = test_rmse
-                test_loss_logger.log(iter=iter_idx, rmse=test_rmse)
+                test_loss_logger.log(iter=iter_idx)
                 logging_str += ', Test RMSE={:.4f}'.format(test_rmse)
             else:
                 no_better_valid += 1

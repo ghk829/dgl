@@ -46,16 +46,16 @@ class JukeboxDataset(DGLDataset):
         df['rating'] = df['count'].apply(lambda x: 1)
         unique_item_list = df['item_id'].unique().tolist()
         from tqdm import tqdm
-        for userid in tqdm(df['user_id'].unique()):
-            res = set()
-            observed = df[df['user_id'] == userid]['item_id'].tolist()
-            while len(res) < 2:
-                sample = random.choice(unique_item_list)
-                if sample not in observed:
-                    res.add(sample)
-            negative_feedback = pd.DataFrame([[userid, e, 0] for e in res])
-            negative_feedback.columns = ['user_id', 'item_id', 'rating']
-            df = pd.concat([df, negative_feedback])
+        # for userid in tqdm(df['user_id'].unique()):
+        #     res = set()
+        #     observed = df[df['user_id'] == userid]['item_id'].tolist()
+        #     while len(res) < 2:
+        #         sample = random.choice(unique_item_list)
+        #         if sample not in observed:
+        #             res.add(sample)
+        #     negative_feedback = pd.DataFrame([[userid, e, 0] for e in res])
+        #     negative_feedback.columns = ['user_id', 'item_id', 'rating']
+        #     df = pd.concat([df, negative_feedback])
         edge_src = torch.from_numpy(df['user_id'].to_numpy())
         edge_dst = torch.from_numpy(df['item_id'].to_numpy())
         self.global_user_id_map = {}
@@ -70,6 +70,7 @@ class JukeboxDataset(DGLDataset):
         self.possible_rating_values = np.unique(df["rating"].values)
 
         train, valid = train_test_split(df, test_size=0.2)
+        self.train = train
         valid[valid['rating'] == 1].to_csv('dataset/test_data.txt', sep=' ', header=False, index=False)
         gt = {}
         for line in open('dataset/test_data.txt'):
@@ -91,7 +92,7 @@ class JukeboxDataset(DGLDataset):
 
 
 
-        train_rating_pairs, train_rating_values = self._generate_pair_value(train)
+        train_rating_pairs, train_rating_values = self._generate_pair_value(df)
 
         self.train_enc_graph = self._generate_enc_graph(train_rating_pairs, train_rating_values, add_support=True)
         self.train_dec_graph = self._generate_dec_graph(train_rating_pairs)

@@ -33,7 +33,7 @@ def parse_args():
                         help='Learning rate.')
 
 
-    parser.add_argument('--gpu', type=int, default=0,
+    parser.add_argument('--gpu', type=int, default=-1,
                         help='0 for NAIS_prod, 1 for NAIS_concat')
 
     parser.add_argument('--mess_dropout', nargs='?', default='[0.1,0.1,0.1]',

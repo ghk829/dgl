@@ -25,7 +25,8 @@ def main(args):
     t0 = time()
     cur_best_pre_0, stopping_step = 0, 0
     loss_loger, pre_loger, rec_loger, ndcg_loger, hit_loger = [], [], [], [], []
-    for epoch in range(args.epoch):
+    from tqdm import tqdm
+    for epoch in tqdm(range(args.epoch)):
         t1 = time()
         loss, mf_loss, emb_loss = 0., 0., 0.
         for idx in range(n_batch):
