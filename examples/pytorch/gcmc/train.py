@@ -260,7 +260,7 @@ def train(args):
                 pos_scores = uidfeat @ net.decoder.Q @ posfeat.T
                 neg_scores = uidfeat @ net.decoder.Q @ negfeat.T
 
-                lmbd = 1e-2
+                lmbd = 1e-4
                 mf_loss = -nn.BCELoss()(th.sigmoid(posfeat), th.ones_like(posfeat)) + nn.LogSigmoid()(
                     pos_scores - neg_scores).mean()
                 mf_loss = -1 * mf_loss
