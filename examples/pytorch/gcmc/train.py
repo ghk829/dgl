@@ -258,7 +258,7 @@ def train(args):
         ufeat, ifeat = net.encoder(dataset.train_enc_graph,
                                    dataset.user_feature, dataset.movie_feature)
         from tqdm import tqdm
-        for row in dataset.train.itertuples():
+        for row in tqdm(list(dataset.train.itertuples())):
             user, item, rating = row.user_id, row.item_id, row.rating
             userid = dataset.global_user_id_map[user]
             observed = dataset.train[dataset.train['user_id'] == user]['item_id'].unique().tolist()
