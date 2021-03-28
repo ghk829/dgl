@@ -278,7 +278,7 @@ def train(args):
             neg_scores = uidfeat @ negfeat.T #net.decoder.dropout(uidfeat) @ net.decoder.Q @ net.decoder.dropout(negfeat).T
 
             lmbd = 1e-4
-            mf_loss = -nn.BCELoss()(th.sigmoid(pos_scores), th.ones_like(pos_scores)) + nn.LogSigmoid()(pos_scores - neg_scores).mean()
+            mf_loss = nn.LogSigmoid()(pos_scores - neg_scores).mean() #-nn.BCELoss()(th.sigmoid(pos_scores), th.ones_like(pos_scores)) +
             mf_loss = -1 * mf_loss
 
             regularizer = (th.norm(uidfeat,dim=1)**2).mean() + (th.norm(posfeat,dim=1)**2).mean() + (th.norm(negfeat,dim=1)**2).mean()
