@@ -12,8 +12,8 @@ train, test = train_test_split(df, test_size=0.2)
 
 
 trainset = {}
-for user in df['user'].unique():
-    itemids = df[df['user'] == user].sort_values('count',ascending=False)['item'].tolist()
+for user in train['user'].unique():
+    itemids = train[train['user'] == user].sort_values('count',ascending=False)['item'].tolist()
     trainset[user] = itemids
 
 testset = {}
