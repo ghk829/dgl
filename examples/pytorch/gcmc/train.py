@@ -176,8 +176,13 @@ def evaluate_ndcg(args, net, dataset, segment='valid'):
         userid = int(userid)
         items = [int(e) for e in items]
         gt[userid] = items
-        #pred = (ufeat[dataset.global_user_id_map[userid]] @ ifeat.T).argsort(descending=True)[:100].numpy().tolist()
-        pred = net.inference(ufeat[dataset.global_user_id_map[userid]], ifeat).sort(descending=True)[1][:100].cpu().numpy().tolist()
+        pred = []
+        already = dataset.train[dataset.train['user_id'] == userid]['item_id'].tolist()
+        res = net.inference(ufeat[dataset.global_user_id_map[userid]], ifeat).sort(descending=True)[1].cpu().numpy().tolist()
+        while len(pred) < 100:
+            for r in res:
+                if r not in already:
+                    pred.append(r)
         preds[userid] = dataset.item_map.inverse_transform(pred).tolist()
 
     return ndcg(preds, gt)
@@ -253,7 +258,7 @@ def train(args):
         ufeat, ifeat = net.encoder(dataset.train_enc_graph,
                                    dataset.user_feature, dataset.movie_feature)
         from tqdm import tqdm
-        for row in tqdm(random.sample(list(dataset.train.itertuples()), 100000)):
+        for row in dataset.train.itertuples():
             user, item, rating = row.user_id, row.item_id, row.rating
             userid = dataset.global_user_id_map[user]
             observed = dataset.train[dataset.train['user_id'] == user]['item_id'].unique().tolist()
