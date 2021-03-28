@@ -24,7 +24,7 @@ def parse_args():
                         help='Embedding size.')
     parser.add_argument('--layer_size', nargs='?', default='[64,64,64]',
                         help='Output sizes of every layer')
-    parser.add_argument('--batch_size', type=int, default=1024,
+    parser.add_argument('--batch_size', type=int, default=200000,
                         help='Batch size.')
 
     parser.add_argument('--regs', nargs='?', default='[1e-5]',

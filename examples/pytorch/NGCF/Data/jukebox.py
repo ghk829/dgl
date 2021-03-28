@@ -3,17 +3,17 @@ from sklearn.model_selection import train_test_split
 
 columns = ['user', 'item', 'count']
 df = pd.read_table('listen_count.txt', sep=' ')
+df.columns = columns
+df['user'] = df['user'].apply(lambda x: x - 1)
+df['item'] = df['item'].apply(lambda x: x - 1)
 
 train, test = train_test_split(df, test_size=0.2)
 
-train.columns = columns
-test.columns = columns
-train['user'] = train['user'].apply(lambda x: x - 1)
-train['item'] = train['item'].apply(lambda x: x - 1)
+
 
 trainset = {}
-for user in train['user'].unique():
-    itemids = train[train['user'] == user].sort_values('count',ascending=False)['item'].tolist()
+for user in df['user'].unique():
+    itemids = df[df['user'] == user].sort_values('count',ascending=False)['item'].tolist()
     trainset[user] = itemids
 
 testset = {}
