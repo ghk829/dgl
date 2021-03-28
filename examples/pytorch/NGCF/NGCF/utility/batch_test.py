@@ -120,6 +120,9 @@ def test(model, g, users_to_test, batch_test_flag=False):
 
     count = 0
 
+    preds = {}
+    gt = {}
+
     for u_batch_id in range(n_user_batchs):
         start = u_batch_id * u_batch_size
         end = (u_batch_id + 1) * u_batch_size
@@ -152,6 +155,37 @@ def test(model, g, users_to_test, batch_test_flag=False):
             u_g_embeddings, pos_i_g_embeddings, _ = model(g, 'user', 'item',user_batch, item_batch, [])
             rate_batch = model.rating(u_g_embeddings, pos_i_g_embeddings).detach().cpu()
 
+        def ndcg(recs, gt):
+            import math
+            Q, S = 0.0, 0.0
+            for u, vs in gt.items():
+                rec = recs.get(u, [])
+                if not rec:
+                    continue
+
+                idcg = sum([1.0 / math.log(i + 2, 2) for i in range(len(vs))])
+                dcg = 0.0
+                for i, r in enumerate(rec):
+                    if r not in vs:
+                        continue
+                    rank = i + 1
+                    dcg += 1.0 / math.log(rank + 1, 2)
+                ndcg = dcg / idcg
+                S += ndcg
+                Q += 1
+            return S / Q
+
+        from tqdm import tqdm
+        for u, r in zip(user_batch,rate_batch):
+            pred = []
+            cans = r.sort(descending=True)[1].numpy().tolist()
+            while len(pred) < 100:
+                for can in cans:
+                    if can not in data_generator.test_set[u]:
+                        pred.append(can)
+            preds[u] = pred
+            gt[u] = data_generator.test_set[u]
+
         user_batch_rating_uid = zip(rate_batch.numpy(), user_batch)
         batch_result = pool.map(test_one_user, user_batch_rating_uid)
         count += len(batch_result)
@@ -163,6 +197,9 @@ def test(model, g, users_to_test, batch_test_flag=False):
             result['hit_ratio'] += re['hit_ratio']/n_test_users
             result['auc'] += re['auc']/n_test_users
 
+
+    ndcg_result = ndcg(preds, gt)
+    print(ndcg_result)
 
     assert count == n_test_users
     pool.close()

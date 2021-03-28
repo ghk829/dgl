@@ -29,7 +29,7 @@ def main(args):
     for epoch in tqdm(range(args.epoch)):
         t1 = time()
         loss, mf_loss, emb_loss = 0., 0., 0.
-        for idx in range(n_batch):
+        for idx in tqdm(range(n_batch)):
             users, pos_items, neg_items = data_generator.sample()
             u_g_embeddings, pos_i_g_embeddings, neg_i_g_embeddings = model(g, 'user', 'item', users,
                                                                            pos_items,
@@ -52,7 +52,7 @@ def main(args):
                 perf_str = 'Epoch %d [%.1fs]: train==[%.5f=%.5f + %.5f]' % (
                     epoch, time() - t1, loss, mf_loss, emb_loss)
                 print(perf_str)
-            continue #end the current epoch and move to the next epoch, let the following evaluation run every 10 epoches
+            # continue #end the current epoch and move to the next epoch, let the following evaluation run every 10 epoches
 
         #evaluate the model every 10 epoches
         t2 = time()
