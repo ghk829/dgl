@@ -33,8 +33,8 @@ class DotProduct(nn.Module):
 
     def inference(self, uidfeat, ifeat):
         with th.no_grad():
-            return uidfeat @ ifeat.T
-            #return self.dropout(uidfeat) @ self.Q @ self.dropout(ifeat).T
+            # return uidfeat @ ifeat.T
+            return uidfeat @ self.Q @ ifeat.T
 
 class Net(nn.Module):
     def __init__(self, args):
@@ -172,7 +172,8 @@ def evaluate_ndcg(args, net, dataset, segment='valid'):
                            dataset.user_feature, dataset.movie_feature)
     preds = {}
     gt = {}
-    for userid, items in dataset.ref_test_data.items():
+    from tqdm import tqdm
+    for userid, items in tqdm(dataset.ref_test_data.items()):
         userid = int(userid)
         items = [int(e) for e in items]
         gt[userid] = items
@@ -246,7 +247,7 @@ def train(args):
                 current_batch = []
         if current_batch:
             yield current_batch
-
+    batches = []
     print("Start training ...")
     dur = []
     for iter_idx in range(1, args.train_max_iter):
@@ -254,34 +255,35 @@ def train(args):
             t0 = time.time()
         net.train()
         unique_item_list = dataset.train['item_id'].unique().tolist()
-        batches = []
+
         ufeat, ifeat = net.encoder(dataset.train_enc_graph,
                                    dataset.user_feature, dataset.movie_feature)
         from tqdm import tqdm
-        for row in tqdm(list(dataset.train.itertuples())):
-            user, item, rating = row.user_id, row.item_id, row.rating
-            userid = dataset.global_user_id_map[user]
-            observed = dataset.train[dataset.train['user_id'] == user]['item_id'].unique().tolist()
-            negatives = set()
-            while len(negatives) < 1:
-                sample = random.choice(unique_item_list)
-                if sample not in observed:
-                    negatives.add(sample)
-                    batches.append((userid, dataset.global_item_id_map[item], dataset.global_item_id_map[sample]))
+        if iter_idx ==1:
+            for row in tqdm(list(dataset.train.itertuples())):
+                user, item, rating = row.user_id, row.item_id, row.rating
+                userid = dataset.global_user_id_map[user]
+                observed = dataset.train[dataset.train['user_id'] == user]['item_id'].unique().tolist()
+                negatives = set()
+                while len(negatives) < 1:
+                    sample = random.choice(unique_item_list)
+                    if sample not in observed:
+                        negatives.add(sample)
+                        batches.append((userid, dataset.global_item_id_map[item], dataset.global_item_id_map[sample]))
 
-        for bt in batch(batches, 10240):
+        for bt in tqdm(list(batch(batches, 2**14))):
             uidfeat = ufeat[[e[0] for e in bt]]
             posfeat = ifeat[[e[1] for e in bt]]
             negfeat = ifeat[[e[2] for e in bt]]
 
-            pos_scores = uidfeat @ posfeat.T # net.decoder.dropout(uidfeat) @ net.decoder.Q @ net.decoder.dropout(posfeat).T
-            neg_scores = uidfeat @ negfeat.T #net.decoder.dropout(uidfeat) @ net.decoder.Q @ net.decoder.dropout(negfeat).T
+            pos_scores = uidfeat @ net.decoder.Q @ posfeat.T
+            neg_scores = uidfeat @ net.decoder.Q @ negfeat.T
 
-            lmbd = 1e-4
-            mf_loss = nn.LogSigmoid()(pos_scores - neg_scores).mean() #-nn.BCELoss()(th.sigmoid(pos_scores), th.ones_like(pos_scores)) +
+            lmbd = 1e-5
+            mf_loss = -nn.BCELoss()(th.sigmoid(pos_scores), th.ones_like(pos_scores)) + nn.LogSigmoid()(pos_scores - neg_scores).mean()
             mf_loss = -1 * mf_loss
 
-            regularizer = (th.norm(uidfeat,dim=1)**2).mean() + (th.norm(posfeat,dim=1)**2).mean() + (th.norm(negfeat,dim=1)**2).mean()
+            regularizer = (th.norm(uidfeat,dim=1)**2).mean() + (th.norm(posfeat,dim=1)**2).mean() + (th.norm(negfeat,dim=1)**2).mean() + (th.norm(net.decoder.Q))
             emb_loss = lmbd * regularizer
             print('mf_loss', mf_loss)
             print('emb_loss', emb_loss)
@@ -289,10 +291,13 @@ def train(args):
             loss = mf_loss + emb_loss
             count_loss += loss.item()
             loss.backward()
+            nn.utils.clip_grad_norm_(net.parameters(), args.train_grad_clip)
             optimizer.step()
             ufeat, ifeat = net.encoder(dataset.train_enc_graph,
                                        dataset.user_feature, dataset.movie_feature)
             count_step += 1
+
+        print('train done')
 
         if iter_idx > 3:
             dur.append(time.time() - t0)

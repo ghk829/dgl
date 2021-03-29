@@ -4,7 +4,7 @@ import torch.nn as nn
 from torch.nn import init
 import dgl.function as fn
 import dgl.nn.pytorch as dglnn
-
+from dgl.nn.pytorch.conv import GATConv
 from utils import get_activation, to_etype_name
 
 class GCMCGraphConv(nn.Module):
@@ -96,6 +96,122 @@ class GCMCGraphConv(nn.Module):
 
         return rst
 
+
+class GCMCGraphGAT(nn.Module):
+    """Graph convolution module used in the GCMC model.
+
+    Parameters
+    ----------
+    in_feats : int
+        Input feature size.
+    out_feats : int
+        Output feature size.
+    weight : bool, optional
+        If True, apply a linear layer. Otherwise, aggregating the messages
+        without a weight matrix or with an shared weight provided by caller.
+    device: str, optional
+        Which device to put data in. Useful in mix_cpu_gpu training and
+        multi-gpu training
+    """
+    def __init__(self,
+                 in_feats:tuple,
+                 out_feats,
+                 weight=True,
+                 device=None,
+                 dropout_rate=0.0):
+        super(GCMCGraphGAT, self).__init__()
+        self._in_feats = in_feats
+        self._out_feats = out_feats
+        self.device = device
+        self.dropout = nn.Dropout(dropout_rate)
+
+        if weight:
+            self.feat1 = nn.Parameter(th.Tensor(in_feats[0], 10))
+            self.feat2 = nn.Parameter(th.Tensor(in_feats[1], 10))
+        else:
+            self.register_parameter('weight', None)
+        self.reset_parameters()
+
+        self.gat = GATConv((10,10), out_feats, 8, attn_drop=dropout_rate, allow_zero_in_degree=True)
+
+    def reset_parameters(self):
+        """Reinitialize learnable parameters."""
+        init.xavier_uniform_(self.feat1)
+        init.xavier_uniform_(self.feat2)
+
+    def forward(self, graph, feat, weight=None):
+        """Compute graph convolution.
+
+        Normalizer constant :math:`c_{ij}` is stored as two node data "ci"
+        and "cj".
+
+        Parameters
+        ----------
+        graph : DGLGraph
+            The graph.
+        feat : torch.Tensor
+            The input feature
+        weight : torch.Tensor, optional
+            Optional external weight tensor.
+        dropout : torch.nn.Dropout, optional
+            Optional external dropout layer.
+
+        Returns
+        -------
+        torch.Tensor
+            The output feature
+        """
+
+        return self.gat(graph, (self.feat1, self.feat2))
+
+
+class GCMCGraphSage(nn.Module):
+    """Graph convolution module used in the GCMC model.
+
+    Parameters
+    ----------
+    in_feats : int
+        Input feature size.
+    out_feats : int
+        Output feature size.
+    weight : bool, optional
+        If True, apply a linear layer. Otherwise, aggregating the messages
+        without a weight matrix or with an shared weight provided by caller.
+    device: str, optional
+        Which device to put data in. Useful in mix_cpu_gpu training and
+        multi-gpu training
+    """
+    def __init__(self,
+                 in_feats:tuple,
+                 out_feats,
+                 weight=True,
+                 device=None,
+                 dropout_rate=0.0):
+        super(GCMCGraphSage, self).__init__()
+        self._in_feats = in_feats
+        self._out_feats = out_feats
+        self.device = device
+        self.dropout = nn.Dropout(dropout_rate)
+
+        if weight:
+            self.feat1 = nn.Parameter(th.Tensor(in_feats[0], 10))
+            self.feat2 = nn.Parameter(th.Tensor(in_feats[1], 10))
+        else:
+            self.register_parameter('weight', None)
+        self.reset_parameters()
+        from dgl.nn.pytorch.conv import SAGEConv
+        self.sage = SAGEConv(10, out_feats, aggregator_type='mean')
+
+    def reset_parameters(self):
+        """Reinitialize learnable parameters."""
+        init.xavier_uniform_(self.feat1)
+        init.xavier_uniform_(self.feat2)
+
+    def forward(self, graph, feat, weight=None):
+
+        return self.sage(graph, (self.feat1, self.feat2))
+
+
 class GCMCLayer(nn.Module):
     r"""GCMC layer
 
@@ -180,24 +296,24 @@ class GCMCLayer(nn.Module):
             if share_user_item_param and user_in_units == movie_in_units:
                 self.W_r[rating] = nn.Parameter(th.randn(user_in_units, msg_units))
                 self.W_r['rev-%s' % rating] = self.W_r[rating]
-                subConv[rating] = GCMCGraphConv(user_in_units,
+                subConv[rating] = GCMCGraphGAT(user_in_units,
                                                 msg_units,
                                                 weight=False,
                                                 device=device,
                                                 dropout_rate=dropout_rate)
-                subConv[rev_rating] = GCMCGraphConv(user_in_units,
+                subConv[rev_rating] = GCMCGraphGAT(user_in_units,
                                                     msg_units,
                                                     weight=False,
                                                     device=device,
                                                     dropout_rate=dropout_rate)
             else:
                 self.W_r = None
-                subConv[rating] = GCMCGraphConv(user_in_units,
+                subConv[rating] = GCMCGraphSage((user_in_units,movie_in_units),
                                                 msg_units,
                                                 weight=True,
                                                 device=device,
                                                 dropout_rate=dropout_rate)
-                subConv[rev_rating] = GCMCGraphConv(movie_in_units,
+                subConv[rev_rating] = GCMCGraphSage((movie_in_units,user_in_units),
                                                     msg_units,
                                                     weight=True,
                                                     device=device,
