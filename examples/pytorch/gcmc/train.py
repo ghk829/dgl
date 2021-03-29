@@ -11,7 +11,7 @@ import numpy as np
 import torch as th
 import torch.nn as nn
 from data import MovieLens, JukeboxDataset
-from model import BiDecoder, GCMCLayer
+from model import BiDecoder, GCMCLayer, GraphSageLayer
 import dgl.function as fn
 from utils import get_activation, get_optimizer, torch_total_param_num, torch_net_info, MetricLogger
 
@@ -40,7 +40,7 @@ class Net(nn.Module):
     def __init__(self, args):
         super(Net, self).__init__()
         self._act = get_activation(args.model_activation)
-        self.encoder = GCMCLayer(args.rating_vals,
+        self.encoder = GraphSageLayer(args.rating_vals,
                                  args.src_in_units,
                                  args.dst_in_units,
                                  args.gcn_agg_units,

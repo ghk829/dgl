@@ -212,54 +212,97 @@ class GCMCGraphSage(nn.Module):
         return self.sage(graph, (self.feat1, self.feat2))
 
 
+class GraphSageLayer(nn.Module):
+    def __init__(self,
+                 rating_vals,
+                 user_in_units,
+                 movie_in_units,
+                 msg_units,
+                 out_units,
+                 dropout_rate=0.0,
+                 agg='stack',  # or 'sum'
+                 agg_act=None,
+                 out_act=None,
+                 share_user_item_param=False,
+                 device=None):
+        super(GraphSageLayer, self).__init__()
+        self.rating_vals = rating_vals
+        self.agg = agg
+        self.share_user_item_param = share_user_item_param
+        self.ufc = nn.Linear(msg_units, out_units)
+        if share_user_item_param:
+            self.ifc = self.ufc
+        else:
+            self.ifc = nn.Linear(msg_units, out_units)
+        if agg == 'stack':
+            # divide the original msg unit size by number of ratings to keep
+            # the dimensionality
+            assert msg_units % len(rating_vals) == 0
+            msg_units = msg_units // len(rating_vals)
+        self.dropout = nn.Dropout(dropout_rate)
+        self.W_r = nn.ParameterDict()
+        subConv = {}
+        subConv2 = {}
+        for rating in rating_vals:
+            # PyTorch parameter name can't contain "."
+            rating = to_etype_name(rating)
+            rev_rating = 'rev-%s' % rating
+            if share_user_item_param and user_in_units == movie_in_units:
+                self.W_r[rating] = nn.Parameter(th.randn(user_in_units, msg_units))
+                self.W_r['rev-%s' % rating] = self.W_r[rating]
+                subConv[rating] = GCMCGraphGAT(user_in_units,
+                                               msg_units,
+                                               weight=False,
+                                               device=device,
+                                               dropout_rate=dropout_rate)
+                subConv[rev_rating] = GCMCGraphGAT(user_in_units,
+                                                   msg_units,
+                                                   weight=False,
+                                                   device=device,
+                                                   dropout_rate=dropout_rate)
+            else:
+                self.W_r = None
+                subConv[rating] = GCMCGraphSage((user_in_units,movie_in_units),
+                                                msg_units,
+                                                weight=True,
+                                                device=device,
+                                                dropout_rate=dropout_rate)
+                subConv[rev_rating] = GCMCGraphSage((movie_in_units,user_in_units),
+                                                    msg_units,
+                                                    weight=True,
+                                                    device=device,
+                                                    dropout_rate=dropout_rate)
+
+        self.conv = dglnn.HeteroGraphConv(subConv, aggregate=agg)
+        # self.conv2 = dglnn.HeteroGraphConv(subConv2, aggregate=agg)
+        self.agg_act = get_activation(agg_act)
+        self.out_act = get_activation(out_act)
+        self.device = device
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        for p in self.parameters():
+            if p.dim() > 1:
+                nn.init.xavier_uniform_(p)
+
+    def forward(self, graph, ufeat=None, ifeat=None):
+        in_feats = {'user' : ufeat, 'item' : ifeat}
+        mod_args = {}
+        for i, rating in enumerate(self.rating_vals):
+            rating = to_etype_name(rating)
+            rev_rating = 'rev-%s' % rating
+            mod_args[rating] = (self.W_r[rating] if self.W_r is not None else None,)
+            mod_args[rev_rating] = (self.W_r[rev_rating] if self.W_r is not None else None,)
+        out_feats = self.conv(graph, in_feats, mod_args=mod_args)
+
+        ufeat = out_feats['user']
+        ifeat = out_feats['item']
+        ufeat = ufeat.view(ufeat.shape[0], -1)
+        ifeat = ifeat.view(ifeat.shape[0], -1)
+
+        return ufeat, ifeat
+
 class GCMCLayer(nn.Module):
-    r"""GCMC layer
-
-    .. math::
-        z_j^{(l+1)} = \sigma_{agg}\left[\mathrm{agg}\left(
-        \sum_{j\in\mathcal{N}_1}\frac{1}{c_{ij}}W_1h_j, \ldots,
-        \sum_{j\in\mathcal{N}_R}\frac{1}{c_{ij}}W_Rh_j
-        \right)\right]
-
-    After that, apply an extra output projection:
-
-    .. math::
-        h_j^{(l+1)} = \sigma_{out}W_oz_j^{(l+1)}
-
-    The equation is applied to both user nodes and movie nodes and the parameters
-    are not shared unless ``share_user_item_param`` is true.
-
-    Parameters
-    ----------
-    rating_vals : list of int or float
-        Possible rating values.
-    user_in_units : int
-        Size of user input feature
-    movie_in_units : int
-        Size of movie input feature
-    msg_units : int
-        Size of message :math:`W_rh_j`
-    out_units : int
-        Size of of final output user and movie features
-    dropout_rate : float, optional
-        Dropout rate (Default: 0.0)
-    agg : str, optional
-        Function to aggregate messages of different ratings.
-        Could be any of the supported cross type reducers:
-        "sum", "max", "min", "mean", "stack".
-        (Default: "stack")
-    agg_act : callable, str, optional
-        Activation function :math:`sigma_{agg}`. (Default: None)
-    out_act : callable, str, optional
-        Activation function :math:`sigma_{agg}`. (Default: None)
-    share_user_item_param : bool, optional
-        If true, user node and movie node share the same set of parameters.
-        Require ``user_in_units`` and ``move_in_units`` to be the same.
-        (Default: False)
-    device: str, optional
-        Which device to put data in. Useful in mix_cpu_gpu training and
-        multi-gpu training
-    """
     def __init__(self,
                  rating_vals,
                  user_in_units,
@@ -289,6 +332,7 @@ class GCMCLayer(nn.Module):
         self.dropout = nn.Dropout(dropout_rate)
         self.W_r = nn.ParameterDict()
         subConv = {}
+        subConv2 = {}
         for rating in rating_vals:
             # PyTorch parameter name can't contain "."
             rating = to_etype_name(rating)
@@ -308,18 +352,28 @@ class GCMCLayer(nn.Module):
                                                     dropout_rate=dropout_rate)
             else:
                 self.W_r = None
-                subConv[rating] = GCMCGraphSage((user_in_units,movie_in_units),
+                subConv[rating] = GCMCGraphConv(user_in_units,
                                                 msg_units,
                                                 weight=True,
                                                 device=device,
                                                 dropout_rate=dropout_rate)
-                subConv[rev_rating] = GCMCGraphSage((movie_in_units,user_in_units),
+                subConv[rev_rating] = GCMCGraphConv(movie_in_units,
+                                                    msg_units,
+                                                    weight=True,
+                                                    device=device,
+                                                    dropout_rate=dropout_rate)
+                subConv2[rating] = GCMCGraphConv(msg_units,
+                                                msg_units,
+                                                weight=True,
+                                                device=device,
+                                                dropout_rate=dropout_rate)
+                subConv2[rev_rating] = GCMCGraphConv(msg_units,
                                                     msg_units,
                                                     weight=True,
                                                     device=device,
                                                     dropout_rate=dropout_rate)
         self.conv = dglnn.HeteroGraphConv(subConv, aggregate=agg)
-        self.leaky_relu = nn.LeakyReLU(0.2)
+        # self.conv2 = dglnn.HeteroGraphConv(subConv2, aggregate=agg)
         self.agg_act = get_activation(agg_act)
         self.out_act = get_activation(out_act)
         self.device = device
@@ -346,25 +400,6 @@ class GCMCLayer(nn.Module):
                 nn.init.xavier_uniform_(p)
 
     def forward(self, graph, ufeat=None, ifeat=None):
-        """Forward function
-
-        Parameters
-        ----------
-        graph : DGLHeteroGraph
-            User-movie rating graph. It should contain two node types: "user"
-            and "movie" and many edge types each for one rating value.
-        ufeat : torch.Tensor, optional
-            User features. If None, using an identity matrix.
-        ifeat : torch.Tensor, optional
-            Movie features. If None, using an identity matrix.
-
-        Returns
-        -------
-        new_ufeat : torch.Tensor
-            New user features
-        new_ifeat : torch.Tensor
-            New movie features
-        """
         in_feats = {'user' : ufeat, 'item' : ifeat}
         mod_args = {}
         for i, rating in enumerate(self.rating_vals):
@@ -373,6 +408,9 @@ class GCMCLayer(nn.Module):
             mod_args[rating] = (self.W_r[rating] if self.W_r is not None else None,)
             mod_args[rev_rating] = (self.W_r[rev_rating] if self.W_r is not None else None,)
         out_feats = self.conv(graph, in_feats, mod_args=mod_args)
+        # out_feats['item'] = out_feats['item'].squeeze(1)
+        # out_feats['user'] = out_feats['user'].squeeze(1)
+        # out_feats = self.conv2(graph,out_feats, mod_args=mod_args)
         ufeat = out_feats['user']
         ifeat = out_feats['item']
         ufeat = ufeat.view(ufeat.shape[0], -1)
